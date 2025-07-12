@@ -236,4 +236,23 @@ export class ChatService extends EventEmitter {
     return sessionCipher.encrypt(bytes);
   }
   
-  private async storeMessage(message: any
+  private async storeMessage(message: any) {
+    await this.storage.store(`message:${message.id}`, message);
+    
+    // Update conversation index
+    const conversationId = message.isGroup ? message.to : 
+      [message.from, message.to].sort().join(':');
+    
+    const conversation = await this.storage.get(`conversation:${conversationId}`) || {
+      id: conversationId,
+      participants: message.isGroup ? [] : [message.from, message.to],
+      lastMessage: null,
+      unreadCount: 0
+    };
+    
+    conversation.lastMessage = message;
+    conversation.updatedAt = Date.now();
+    
+    await this.storage.store(`conversation:${conversationId}`, conversation);
+  }
+}
