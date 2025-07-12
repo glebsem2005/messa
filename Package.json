@@ -1,0 +1,41 @@
+{
+  "name": "messa",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "infrastructure/*"
+  ],
+  "scripts": {
+    "bootstrap": "lerna bootstrap && npm run build:crypto",
+    "build:crypto": "cd packages/crypto && npm run build:native",
+    "dev": "concurrently \"npm run dev:relay\" \"npm run dev:web\"",
+    "dev:relay": "cd infrastructure/relay && npm run dev",
+    "dev:web": "cd packages/web && npm run dev",
+    "build": "lerna run build",
+    "build:mobile": "npm run build:android && npm run build:ios",
+    "build:android": "cd packages/mobile && npm run android:build",
+    "build:ios": "cd packages/mobile && npm run ios:build",
+    "build:desktop": "cd packages/desktop && npm run build:all",
+    "db:init": "node scripts/init-local-db.js",
+    "test": "jest",
+    "lint": "eslint . --ext .ts,.tsx",
+    "deploy:local": "docker-compose up -d",
+    "deploy:prod": "npm run build && node scripts/deploy.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "concurrently": "^8.0.0",
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0",
+    "lerna": "^7.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "sqlite3": "^5.1.6",
+    "better-sqlite3": "^9.0.0"
+  }
+}
