@@ -40,7 +40,67 @@ export function useBiometryAuth(): UseBiometryAuthReturn {
       setCurrentDID(did);
       setIsAuthenticated(true);
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Registration failed';
+      const errorMessage = err instanceof Error ? err.message : 'Authentication failed';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [identityService]);
+
+  const logout = useCallback(() => {
+    setIsAuthenticated(false);
+    setCurrentDID(null);
+    setError(null);
+  }, []);
+
+  const exportIdentity = useCallback(async (): Promise<string> => {
+    if (!isAuthenticated || !currentDID) {
+      throw new Error('Not authenticated');
+    }
+
+    setIsLoading(true);
+    try {
+      const exportData = await identityService.exportIdentity();
+      return exportData;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Export failed';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [identityService, isAuthenticated, currentDID]);
+
+  const importIdentity = useCallback(async (data: string) => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      await identityService.importIdentity(data);
+      // После импорта нужно аутентифицироваться с фото
+      setError('Please authenticate with your photo to complete import');
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Import failed';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [identityService]);
+
+  return {
+    isAuthenticated,
+    currentDID,
+    isLoading,
+    error,
+    register,
+    authenticate,
+    logout,
+    exportIdentity,
+    importIdentity,
+  };
+} Error ? err.message : 'Registration failed';
       setError(errorMessage);
       throw new Error(errorMessage);
     } finally {
