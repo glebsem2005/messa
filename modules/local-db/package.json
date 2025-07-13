@@ -1,0 +1,35 @@
+{
+  "name": "@messa/local-db",
+  "version": "1.0.0",
+  "description": "Зашифрованная локальная база данных для messa",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/**/*.ts",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@messa/crypto-layer": "workspace:*",
+    "better-sqlite3": "^9.2.2",
+    "libsodium-wrappers": "^0.7.13",
+    "sql-template-strings": "^2.2.2",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/libsodium-wrappers": "^0.7.13",
+    "tsup": "^8.0.1",
+    "vitest": "^1.0.4"
+  }
+}
