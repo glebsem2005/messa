@@ -1,0 +1,40 @@
+{
+  "name": "@messa/auth-biometry",
+  "version": "1.0.0",
+  "description": "Биометрическая аутентификация для messa",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/**/*.ts",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.15.0",
+    "@tensorflow/tfjs-react-native": "^0.8.0",
+    "@vladmandic/face-api": "^1.7.12",
+    "expo-camera": "^13.6.0",
+    "expo-face-detector": "^12.5.0",
+    "libsodium-wrappers": "^0.7.13",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "^0.7.13",
+    "tsup": "^8.0.1",
+    "vitest": "^1.0.4"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0",
+    "react-native": "*"
+  }
+}
