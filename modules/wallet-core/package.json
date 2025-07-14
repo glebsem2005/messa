@@ -1,0 +1,38 @@
+{
+  "name": "@messa/wallet-core",
+  "version": "1.0.0",
+  "description": "Криптовалютные кошельки для messa",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/**/*.ts",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@messa/crypto-layer": "workspace:*",
+    "@messa/local-db": "workspace:*",
+    "@noble/hashes": "^1.3.3",
+    "@noble/secp256k1": "^2.0.0",
+    "@scure/bip32": "^1.3.3",
+    "@scure/bip39": "^1.2.2",
+    "bitcoinjs-lib": "^6.1.5",
+    "ethers": "^6.9.0",
+    "libsodium-wrappers": "^0.7.13"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "^0.7.13",
+    "tsup": "^8.0.1",
+    "vitest": "^1.0.4"
+  }
+}
