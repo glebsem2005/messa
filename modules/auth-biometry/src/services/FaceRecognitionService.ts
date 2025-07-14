@@ -4,41 +4,88 @@ import type { FaceData, IFaceRecognitionService, FaceLandmark, BoundingBox } fro
 
 export class FaceRecognitionService implements IFaceRecognitionService {
   private initialized = false;
+  private loadModelsPromise: Promise<void> | null = null;
+  private imageWidth = 224;
+  private imageHeight = 224;
 
   async initialize(): Promise<void> {
-    if (this.initialized) return;
+    if (this.loadModelsPromise) return this.loadModelsPromise;
+    this.loadModelsPromise = (async () => {
+      // --- Setup TF backend per environment ---
+      if (typeof navigator !== 'undefined' && navigator.product === 'ReactNative') {
+        // React Native
+        await import('@tensorflow/tfjs-react-native');
+        await tf.ready();
+        await tf.setBackend('rn-webgl');
+      } else if (typeof process !== 'undefined' && process.versions?.electron) {
+        // Electron / Node
+        await import('@tensorflow/tfjs-node');
+        await tf.setBackend('tensorflow');
+      } else {
+        // Web
+        await tf.setBackend('webgl');
+      }
+      await tf.ready();
 
-    await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
-    await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
-    await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
+      // --- Load face-api models ---
+      const modelPath = (typeof window !== 'undefined') ? '/models' : './models';
 
-    this.initialized = true;
+      // Загрузка легкого детектора и SSD для выбора в detectFace
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(modelPath),
+        faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath),
+        faceapi.nets.faceLandmark68Net.loadFromUri(modelPath),
+        faceapi.nets.faceRecognitionNet.loadFromUri(modelPath),
+      ]);
+
+      this.initialized = true;
+    })();
+    return this.loadModelsPromise;
   }
 
-  async detectFace(imageData: Uint8Array): Promise<FaceData | null> {
+  private decodeImage(imageData: Uint8Array | Buffer): tf.Tensor3D {
+    if ((tf as any).node?.decodeImage && Buffer.isBuffer(imageData)) {
+      // Electron / Node.js
+      return (tf as any).node.decodeImage(imageData, 3);
+    } else {
+      // Web / React Native
+      // Преобразуем Uint8Array в ImageData для fromPixels
+      return tf.browser.fromPixels(
+        new ImageData(
+          new Uint8ClampedArray(imageData as Uint8Array),
+          this.imageWidth,
+          this.imageHeight
+        )
+      ) as tf.Tensor3D;
+    }
+  }
+
+  async detectFace(imageData: Uint8Array | Buffer): Promise<FaceData | null> {
     await this.initialize();
 
+    let tensor: tf.Tensor3D | null = null;
+
     try {
-      const imgTensor = tf.browser.fromPixels(new ImageData(
-        new Uint8ClampedArray(imageData),
-        224, 224
-      ));
+      tensor = this.decodeImage(imageData);
+
+      // Автоматический выбор детектора: для RN — tiny, для Web/Electron — ssd
+      const backend = tf.getBackend();
+      const useTiny = backend === 'rn-webgl';
+
+      const options = useTiny
+        ? new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 })
+        : new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
 
       const detection = await faceapi
-        .detectSingleFace(imgTensor as any)
+        .detectSingleFace(tensor, options)
         .withFaceLandmarks()
         .withFaceDescriptor();
 
-      if (!detection) {
-        imgTensor.dispose();
-        return null;
-      }
+      if (!detection) return null;
 
       const landmarks = this.extractLandmarks(detection.landmarks);
       const boundingBox = this.extractBoundingBox(detection.detection);
       const embeddings = new Float32Array(detection.descriptor);
-
-      imgTensor.dispose();
 
       return {
         embeddings,
@@ -49,6 +96,8 @@ export class FaceRecognitionService implements IFaceRecognitionService {
     } catch (error) {
       console.error('Face detection error:', error);
       return null;
+    } finally {
+      tensor?.dispose();
     }
   }
 
@@ -62,7 +111,7 @@ export class FaceRecognitionService implements IFaceRecognitionService {
     return similarity;
   }
 
-  async validateLiveness(frames: Uint8Array[]): Promise<boolean> {
+  async validateLiveness(frames: (Uint8Array | Buffer)[]): Promise<boolean> {
     if (frames.length < 3) {
       throw new Error('At least 3 frames required for liveness detection');
     }
@@ -92,7 +141,6 @@ export class FaceRecognitionService implements IFaceRecognitionService {
     return totalMovement > 5;
   }
 
-  // Новый метод: отправка эмбеддингов на сервер для проверки
   async sendEmbeddingsToServer(embeddings: Float32Array): Promise<{ verified: boolean; message?: string }> {
     try {
       const response = await fetch('https://yourserver.com/api/biometry/verify-face', {
