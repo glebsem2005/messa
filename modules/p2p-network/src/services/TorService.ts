@@ -2,45 +2,42 @@ import { EventEmitter } from 'events';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import TorControl from 'tor-control';
 import type { ITorService, TorConfig } from '../types';
-
-interface Circuit {
-  id: string;
-  path: string[];
-  state: 'building' | 'ready' | 'closed';
-  createdAt: Date;
-  purpose?: string;
-}
+import * as fs from 'fs';
 
 export class TorService extends EventEmitter implements ITorService {
-  private config: TorConfig | null = null;
-  private circuits: Map<string, Circuit> = new Map();
-  private hiddenServices: Map<number, string> = new Map();
-  private isRunning = false;
   private torProcess: ChildProcessWithoutNullStreams | null = null;
   private control: TorControl | null = null;
+  private isRunning = false;
+  private hiddenServices = new Map<number, string>();
+  private config: TorConfig | null = null;
 
   async start(config: TorConfig): Promise<void> {
     this.config = config;
 
-    // Start Tor process
+    // Ensure hidden service directory exists
+    if (!fs.existsSync(config.hiddenServiceDir)) {
+      fs.mkdirSync(config.hiddenServiceDir, { recursive: true });
+    }
+
     this.torProcess = spawn('tor', [
-      '--ControlPort', config.controlPort?.toString() || '9051',
+      '--ControlPort', config.controlPort.toString(),
+      '--SocksPort', config.socksPort.toString(),
       '--CookieAuthentication', '0',
-      '--DataDirectory', config.dataDir || './tor_data',
-      ...(config.extraTorrcArgs || [])
+      '--DataDirectory', config.hiddenServiceDir,
+      ...(config.bridges ? config.bridges.map(b => `Bridge ${b}`) : []),
     ]);
 
     this.torProcess.stdout.on('data', (data) => {
-      const output = data.toString();
-      if (output.includes('Bootstrapped 100%')) {
-        console.log('[Tor] Bootstrapped.');
+      const msg = data.toString();
+      if (msg.includes('Bootstrapped 100%')) {
         this.isRunning = true;
         this.emit('ready');
       }
+      console.log('[Tor]', msg.trim());
     });
 
     this.torProcess.stderr.on('data', (data) => {
-      console.error('[Tor stderr]', data.toString());
+      console.error('[Tor error]', data.toString().trim());
     });
 
     this.torProcess.on('close', (code) => {
@@ -49,39 +46,27 @@ export class TorService extends EventEmitter implements ITorService {
       this.emit('stopped');
     });
 
-    // Wait a bit for Tor to start
-    await new Promise(resolve => setTimeout(resolve, 7000));
+    // Wait briefly before connecting
+    await new Promise((resolve) => setTimeout(resolve, 7000));
 
-    // Connect to control port
     this.control = new TorControl({
-      password: config.password || '',
-      port: config.controlPort || 9051,
-      host: config.host || '127.0.0.1'
+      password: '',
+      port: config.controlPort,
+      host: '127.0.0.1'
     });
 
     this.control.connect();
 
-    this.control.on('error', (err) => {
-      console.error('Tor control error:', err);
+    this.control.on('ready', () => {
+      console.log('[Tor Control] Connected');
     });
 
-    this.control.on('ready', async () => {
-      console.log('[Tor Control] Connected');
-      await this.buildInitialCircuits();
-      setInterval(() => this.refreshCircuits(), 60000);
+    this.control.on('error', (err) => {
+      console.error('[Tor Control error]', err);
     });
   }
 
   async stop(): Promise<void> {
-    if (!this.isRunning) return;
-
-    for (const id of this.circuits.keys()) {
-      await this.closeCircuit(id);
-    }
-
-    this.circuits.clear();
-    this.hiddenServices.clear();
-
     if (this.control) {
       this.control.quit();
       this.control = null;
@@ -93,129 +78,50 @@ export class TorService extends EventEmitter implements ITorService {
     }
 
     this.isRunning = false;
+    this.hiddenServices.clear();
     this.emit('stopped');
   }
 
   async createHiddenService(port: number): Promise<string> {
     if (!this.control) throw new Error('Tor control not ready');
 
-    const hsCmd = `ADD_ONION NEW:ED25519-V3 Port=${port},127.0.0.1:${port}`;
-    const response = await this.sendControlCommand(hsCmd);
-
-    const match = response.match(/ServiceID=(\w+)/);
-    if (!match) throw new Error('Failed to create hidden service');
-
+    const cmd = `ADD_ONION NEW:ED25519-V3 Port=${port},127.0.0.1:${port}`;
+    const result = await this.sendControlCommand(cmd);
+    const match = result.match(/ServiceID=(\w+)/);
+    if (!match) throw new Error('Failed to parse hidden service ID');
     const onion = `${match[1]}.onion`;
     this.hiddenServices.set(port, onion);
-    console.log(`Created hidden service: ${onion} -> localhost:${port}`);
     return onion;
   }
 
   async connect(onionAddress: string): Promise<void> {
-    if (!this.isRunning) throw new Error('Tor not running');
-    const circuit = await this.buildCircuit();
-    console.log(`Connecting to ${onionAddress} through circuit ${circuit.id}`);
-    this.emit('connected', { address: onionAddress, circuit: circuit.id });
+    if (!this.isRunning) throw new Error('Tor is not running');
+    console.log(`[TorService] Connecting to ${onionAddress}...`);
+    this.emit('connected', { address: onionAddress });
   }
 
   async getCircuits(): Promise<string[]> {
-    return Array.from(this.circuits.keys());
+    if (!this.control) return [];
+    const response = await this.sendControlCommand('GETINFO circuit-status');
+    return response
+      .split('\n')
+      .filter(line => line.startsWith('250+'))
+      .map(line => line.split(' ')[0].replace('250+', '').trim());
   }
 
   async newCircuit(): Promise<void> {
-    const circuit = await this.buildCircuit();
-    console.log(`Built new circuit: ${circuit.id}`);
+    if (!this.control) throw new Error('Tor control not ready');
+    await this.sendControlCommand('SIGNAL NEWNYM');
+    console.log('[TorService] New circuit signal sent');
   }
 
-  private async buildInitialCircuits(): Promise<void> {
-    for (let i = 0; i < 3; i++) {
-      await this.buildCircuit();
-    }
-  }
-
-  private async buildCircuit(): Promise<Circuit> {
-    const circuit: Circuit = {
-      id: this.generateCircuitId(),
-      path: this.selectRelays(),
-      state: 'building',
-      createdAt: new Date()
-    };
-
-    this.circuits.set(circuit.id, circuit);
-
-    await new Promise(resolve => setTimeout(resolve, 300));
-    circuit.state = 'ready';
-    return circuit;
-  }
-
-  private async closeCircuit(circuitId: string): Promise<void> {
-    const circuit = this.circuits.get(circuitId);
-    if (!circuit) return;
-    circuit.state = 'closed';
-    this.circuits.delete(circuitId);
-  }
-
-  private async refreshCircuits(): Promise<void> {
-    if (!this.isRunning) return;
-
-    const now = Date.now();
-    for (const [id, circuit] of this.circuits) {
-      if (now - circuit.createdAt.getTime() > 10 * 60 * 1000) {
-        await this.closeCircuit(id);
-      }
-    }
-
-    while (this.circuits.size < 3) {
-      await this.buildCircuit();
-    }
-  }
-
-  private selectRelays(): string[] {
-    return [
-      'relay1.torproject.org',
-      'relay2.torproject.org',
-      'relay3.torproject.org'
-    ];
-  }
-
-  private generateCircuitId(): string {
-    return `circuit_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-  }
-
-  async sendControlCommand(command: string): Promise<string> {
-    if (!this.control) throw new Error('Control connection not ready');
-
+  private sendControlCommand(command: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      this.control!.send(command, (err: Error, data: string) => {
+      if (!this.control) return reject(new Error('No control connection'));
+      this.control.send(command, (err, data) => {
         if (err) return reject(err);
         resolve(data);
       });
     });
-  }
-
-  async getInfo(key: string): Promise<string> {
-    return this.sendControlCommand(`GETINFO ${key}`);
-  }
-
-  async addBridge(bridge: string): Promise<void> {
-    if (!this.config) return;
-    this.config.bridges = this.config.bridges || [];
-    this.config.bridges.push(bridge);
-    console.log(`Added bridge: ${bridge}`);
-  }
-
-  async removeBridge(bridge: string): Promise<void> {
-    if (!this.config?.bridges) return;
-    const i = this.config.bridges.indexOf(bridge);
-    if (i >= 0) {
-      this.config.bridges.splice(i, 1);
-      console.log(`Removed bridge: ${bridge}`);
-    }
-  }
-
-  async isolateStream(purpose: string): Promise<string> {
-    const circuit = await this.buildCircuit();
-    circuit.purpose = purpose;
-    return circuit.id;
   }
 }
