@@ -1,32 +1,91 @@
-import type { IBiometryService, FaceData } from '../types';
 import { FaceRecognitionService } from './FaceRecognitionService';
+import { IdentityService } from './IdentityService';
+import type { BiometryAuthResult, DID } from '../types';
 
-export class BiometryService implements IBiometryService {
-  private db: Float32Array[] = [];
-  private recognizer = new FaceRecognitionService();
+export class BiometryService {
+  private faceRecognition: FaceRecognitionService;
+  private identityService: IdentityService;
+  private platform: 'web' | 'mobile' | 'desktop';
 
-  async register(data: FaceData): Promise<void> {
-    this.db.push(data.embeddings);
+  constructor() {
+    this.faceRecognition = new FaceRecognitionService();
+    this.identityService = new IdentityService();
+    this.platform = this.detectPlatform();
   }
 
-  async authenticate(image: Uint8Array): Promise<boolean> {
-    const data = await this.recognizer.detectFace(image);
-    if (!data) return false;
+  async initialize(): Promise<void> {
+    await this.identityService.initialize();
+    await this.faceRecognition.initialize();
+  }
 
-    for (const stored of this.db) {
-      const sim = await this.recognizer.compareFaces(
-        {
-          embeddings: stored,
-          landmarks: [],
-          boundingBox: { x: 0, y: 0, width: 0, height: 0 },
-          confidence: 1,
-        },
-        data
-      );
-      if (sim > 90) return true;
+  async register(photoData: Uint8Array): Promise<DID> {
+    // Создание нового DID
+    const did = await this.identityService.createDID();
+    
+    // Привязка фото к DID
+    await this.identityService.bindPhotoToDID(did.id, photoData);
+    
+    return did;
+  }
+
+  async login(photoData: Uint8Array): Promise<BiometryAuthResult> {
+    return this.identityService.authenticateWithPhoto(photoData);
+  }
+
+  async checkCameraPermissions(): Promise<boolean> {
+    try {
+      if (this.platform === 'web' || this.platform === 'desktop') {
+        const result = await navigator.permissions.query({ name: 'camera' as PermissionName });
+        return result.state === 'granted';
+      }
+      
+      // Для мобильных платформ проверка через Capacitor/React Native
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async requestCameraPermissions(): Promise<boolean> {
+    try {
+      if (this.platform === 'web' || this.platform === 'desktop') {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(track => track.stop());
+        return true;
+      }
+      
+      // Для мобильных платформ
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private detectPlatform(): 'web' | 'mobile' | 'desktop' {
+    if (typeof window === 'undefined') {
+      return 'desktop';
     }
 
-    return false;
+    // Проверка React Native
+    if (typeof navigator !== 'undefined' && navigator.product === 'ReactNative') {
+      return 'mobile';
+    }
+
+    // Проверка Electron
+    if (typeof process !== 'undefined' && process.versions && process.versions.electron) {
+      return 'desktop';
+    }
+
+    // Проверка мобильного браузера
+    const userAgent = navigator.userAgent || navigator.vendor || (window as any).opera;
+    if (/android/i.test(userAgent) || /iPad|iPhone|iPod/.test(userAgent)) {
+      return 'mobile';
+    }
+
+    return 'web';
+  }
+
+  getPlatform(): string {
+    return this.platform;
   }
 }
-
