@@ -1,0 +1,35 @@
+{
+  "name": "@messa/call-p2p",
+  "version": "1.0.0",
+  "description": "P2P видео/аудио звонки для messa",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest",
+    "lint": "eslint src/**/*.ts",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@messa/crypto-layer": "workspace:*",
+    "@messa/p2p-network": "workspace:*",
+    "simple-peer": "^9.11.1",
+    "libsodium-wrappers": "^0.7.13",
+    "events": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/simple-peer": "^9.11.8",
+    "@types/libsodium-wrappers": "^0.7.13",
+    "tsup": "^8.0.1",
+    "vitest": "^1.0.4"
+  }
+}
