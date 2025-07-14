@@ -2,90 +2,61 @@ import * as tf from '@tensorflow/tfjs';
 import * as faceapi from '@vladmandic/face-api';
 import type { FaceData, IFaceRecognitionService, FaceLandmark, BoundingBox } from '../types';
 
+// Путь до моделей для Web
+const MODEL_URL_WEB = '/models';
+// Путь до моделей для React Native или fallback
+const MODEL_URL_CDN = 'https://cdn.jsdelivr.net/gh/vladmandic/face-api/model';
+
 export class FaceRecognitionService implements IFaceRecognitionService {
   private initialized = false;
-  private loadModelsPromise: Promise<void> | null = null;
-  private imageWidth = 224;
-  private imageHeight = 224;
 
   async initialize(): Promise<void> {
-    if (this.loadModelsPromise) return this.loadModelsPromise;
-    this.loadModelsPromise = (async () => {
-      // --- Setup TF backend per environment ---
-      if (typeof navigator !== 'undefined' && navigator.product === 'ReactNative') {
-        // React Native
-        await import('@tensorflow/tfjs-react-native');
-        await tf.ready();
-        await tf.setBackend('rn-webgl');
-      } else if (typeof process !== 'undefined' && process.versions?.electron) {
-        // Electron / Node
-        await import('@tensorflow/tfjs-node');
-        await tf.setBackend('tensorflow');
-      } else {
-        // Web
-        await tf.setBackend('webgl');
-      }
-      await tf.ready();
-
-      // --- Load face-api models ---
-      const modelPath = (typeof window !== 'undefined') ? '/models' : './models';
-
-      // Загрузка легкого детектора и SSD для выбора в detectFace
-      await Promise.all([
-        faceapi.nets.tinyFaceDetector.loadFromUri(modelPath),
-        faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath),
-        faceapi.nets.faceLandmark68Net.loadFromUri(modelPath),
-        faceapi.nets.faceRecognitionNet.loadFromUri(modelPath),
-      ]);
-
-      this.initialized = true;
-    })();
-    return this.loadModelsPromise;
-  }
-
-  private decodeImage(imageData: Uint8Array | Buffer): tf.Tensor3D {
-    if ((tf as any).node?.decodeImage && Buffer.isBuffer(imageData)) {
-      // Electron / Node.js
-      return (tf as any).node.decodeImage(imageData, 3);
-    } else {
-      // Web / React Native
-      // Преобразуем Uint8Array в ImageData для fromPixels
-      return tf.browser.fromPixels(
-        new ImageData(
-          new Uint8ClampedArray(imageData as Uint8Array),
-          this.imageWidth,
-          this.imageHeight
-        )
-      ) as tf.Tensor3D;
-    }
-  }
-
-  async detectFace(imageData: Uint8Array | Buffer): Promise<FaceData | null> {
-    await this.initialize();
-
-    let tensor: tf.Tensor3D | null = null;
+    if (this.initialized) return;
 
     try {
-      tensor = this.decodeImage(imageData);
+      // Сначала пробуем локально (public/models)
+      await Promise.all([
+        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL_WEB),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL_WEB),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL_WEB),
+      ]);
+    } catch (e) {
+      console.warn('⚠️ Local model loading failed, trying CDN fallback...');
+      // Если не вышло — грузим с CDN
+      await Promise.all([
+        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL_CDN),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL_CDN),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL_CDN),
+      ]);
+    }
 
-      // Автоматический выбор детектора: для RN — tiny, для Web/Electron — ssd
-      const backend = tf.getBackend();
-      const useTiny = backend === 'rn-webgl';
+    this.initialized = true;
+  }
 
-      const options = useTiny
-        ? new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 })
-        : new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
+  async detectFace(imageData: Uint8Array): Promise<FaceData | null> {
+    await this.initialize();
+
+    try {
+      const imgTensor = tf.browser.fromPixels(new ImageData(
+        new Uint8ClampedArray(imageData),
+        224, 224
+      ));
 
       const detection = await faceapi
-        .detectSingleFace(tensor, options)
+        .detectSingleFace(imgTensor as any)
         .withFaceLandmarks()
         .withFaceDescriptor();
 
-      if (!detection) return null;
+      if (!detection) {
+        imgTensor.dispose();
+        return null;
+      }
 
       const landmarks = this.extractLandmarks(detection.landmarks);
       const boundingBox = this.extractBoundingBox(detection.detection);
       const embeddings = new Float32Array(detection.descriptor);
+
+      imgTensor.dispose();
 
       return {
         embeddings,
@@ -96,8 +67,6 @@ export class FaceRecognitionService implements IFaceRecognitionService {
     } catch (error) {
       console.error('Face detection error:', error);
       return null;
-    } finally {
-      tensor?.dispose();
     }
   }
 
@@ -106,12 +75,10 @@ export class FaceRecognitionService implements IFaceRecognitionService {
       Array.from(face1.embeddings),
       Array.from(face2.embeddings)
     );
-
-    const similarity = Math.max(0, Math.min(100, (1 - distance) * 100));
-    return similarity;
+    return Math.max(0, Math.min(100, (1 - distance) * 100));
   }
 
-  async validateLiveness(frames: (Uint8Array | Buffer)[]): Promise<boolean> {
+  async validateLiveness(frames: Uint8Array[]): Promise<boolean> {
     if (frames.length < 3) {
       throw new Error('At least 3 frames required for liveness detection');
     }
@@ -120,22 +87,17 @@ export class FaceRecognitionService implements IFaceRecognitionService {
 
     for (const frame of frames) {
       const faceData = await this.detectFace(frame);
-      if (faceData) {
-        faceDataArray.push(faceData);
-      }
+      if (faceData) faceDataArray.push(faceData);
     }
 
-    if (faceDataArray.length < frames.length * 0.8) {
-      return false;
-    }
+    if (faceDataArray.length < frames.length * 0.8) return false;
 
     let totalMovement = 0;
     for (let i = 1; i < faceDataArray.length; i++) {
-      const movement = this.calculateMovement(
+      totalMovement += this.calculateMovement(
         faceDataArray[i - 1].landmarks,
         faceDataArray[i].landmarks
       );
-      totalMovement += movement;
     }
 
     return totalMovement > 5;
@@ -146,9 +108,7 @@ export class FaceRecognitionService implements IFaceRecognitionService {
       const response = await fetch('https://yourserver.com/api/biometry/verify-face', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          embeddings: Array.from(embeddings),
-        }),
+        body: JSON.stringify({ embeddings: Array.from(embeddings) }),
       });
 
       if (!response.ok) {
@@ -175,23 +135,16 @@ export class FaceRecognitionService implements IFaceRecognitionService {
 
   private extractBoundingBox(detection: faceapi.FaceDetection): BoundingBox {
     const box = detection.box;
-    return {
-      x: box.x,
-      y: box.y,
-      width: box.width,
-      height: box.height,
-    };
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
   }
 
   private calculateMovement(landmarks1: FaceLandmark[], landmarks2: FaceLandmark[]): number {
-    let totalDistance = 0;
-
+    let total = 0;
     for (let i = 0; i < landmarks1.length; i++) {
       const dx = landmarks2[i].x - landmarks1[i].x;
       const dy = landmarks2[i].y - landmarks1[i].y;
-      totalDistance += Math.sqrt(dx * dx + dy * dy);
+      total += Math.sqrt(dx * dx + dy * dy);
     }
-
-    return totalDistance / landmarks1.length;
+    return total / landmarks1.length;
   }
 }
