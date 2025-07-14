@@ -2,9 +2,7 @@ import * as tf from '@tensorflow/tfjs';
 import * as faceapi from '@vladmandic/face-api';
 import type { FaceData, IFaceRecognitionService, FaceLandmark, BoundingBox } from '../types';
 
-// Путь до моделей для Web
-const MODEL_URL_WEB = '/models';
-// Путь до моделей для React Native или fallback
+const MODEL_URL_LOCAL = '/models';
 const MODEL_URL_CDN = 'https://cdn.jsdelivr.net/gh/vladmandic/face-api/model';
 
 export class FaceRecognitionService implements IFaceRecognitionService {
@@ -13,21 +11,25 @@ export class FaceRecognitionService implements IFaceRecognitionService {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
+    const modelUrl = typeof window !== 'undefined' ? MODEL_URL_LOCAL : MODEL_URL_CDN;
+
     try {
-      // Сначала пробуем локально (public/models)
       await Promise.all([
-        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL_WEB),
-        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL_WEB),
-        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL_WEB),
+        faceapi.nets.ssdMobilenetv1.loadFromUri(modelUrl),
+        faceapi.nets.faceLandmark68Net.loadFromUri(modelUrl),
+        faceapi.nets.faceRecognitionNet.loadFromUri(modelUrl),
       ]);
-    } catch (e) {
-      console.warn('⚠️ Local model loading failed, trying CDN fallback...');
-      // Если не вышло — грузим с CDN
-      await Promise.all([
-        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL_CDN),
-        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL_CDN),
-        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL_CDN),
-      ]);
+    } catch (error) {
+      if (modelUrl === MODEL_URL_LOCAL) {
+        console.warn('⚠️ Local model loading failed, trying CDN...');
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL_CDN),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL_CDN),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL_CDN),
+        ]);
+      } else {
+        throw error;
+      }
     }
 
     this.initialized = true;
@@ -36,27 +38,22 @@ export class FaceRecognitionService implements IFaceRecognitionService {
   async detectFace(imageData: Uint8Array): Promise<FaceData | null> {
     await this.initialize();
 
+    let imgTensor: tf.Tensor | null = null;
     try {
-      const imgTensor = tf.browser.fromPixels(new ImageData(
-        new Uint8ClampedArray(imageData),
-        224, 224
-      ));
+      imgTensor = tf.browser.fromPixels(
+        new ImageData(new Uint8ClampedArray(imageData), 224, 224)
+      );
 
       const detection = await faceapi
         .detectSingleFace(imgTensor as any)
         .withFaceLandmarks()
         .withFaceDescriptor();
 
-      if (!detection) {
-        imgTensor.dispose();
-        return null;
-      }
+      if (!detection) return null;
 
       const landmarks = this.extractLandmarks(detection.landmarks);
       const boundingBox = this.extractBoundingBox(detection.detection);
       const embeddings = new Float32Array(detection.descriptor);
-
-      imgTensor.dispose();
 
       return {
         embeddings,
@@ -67,6 +64,8 @@ export class FaceRecognitionService implements IFaceRecognitionService {
     } catch (error) {
       console.error('Face detection error:', error);
       return null;
+    } finally {
+      imgTensor?.dispose?.();
     }
   }
 
@@ -79,15 +78,12 @@ export class FaceRecognitionService implements IFaceRecognitionService {
   }
 
   async validateLiveness(frames: Uint8Array[]): Promise<boolean> {
-    if (frames.length < 3) {
-      throw new Error('At least 3 frames required for liveness detection');
-    }
+    if (frames.length < 3) throw new Error('At least 3 frames required');
 
     const faceDataArray: FaceData[] = [];
-
     for (const frame of frames) {
-      const faceData = await this.detectFace(frame);
-      if (faceData) faceDataArray.push(faceData);
+      const data = await this.detectFace(frame);
+      if (data) faceDataArray.push(data);
     }
 
     if (faceDataArray.length < frames.length * 0.8) return false;
@@ -111,14 +107,12 @@ export class FaceRecognitionService implements IFaceRecognitionService {
         body: JSON.stringify({ embeddings: Array.from(embeddings) }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Server responded with status ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Server error ${response.status}`);
 
       const data = await response.json();
       return { verified: data.verified, message: data.message };
     } catch (error) {
-      console.error('Error sending embeddings to server:', error);
+      console.error('Verification error:', error);
       return { verified: false, message: error.message };
     }
   }
@@ -139,12 +133,10 @@ export class FaceRecognitionService implements IFaceRecognitionService {
   }
 
   private calculateMovement(landmarks1: FaceLandmark[], landmarks2: FaceLandmark[]): number {
-    let total = 0;
-    for (let i = 0; i < landmarks1.length; i++) {
-      const dx = landmarks2[i].x - landmarks1[i].x;
-      const dy = landmarks2[i].y - landmarks1[i].y;
-      total += Math.sqrt(dx * dx + dy * dy);
-    }
-    return total / landmarks1.length;
+    return landmarks1.reduce((sum, point, i) => {
+      const dx = landmarks2[i].x - point.x;
+      const dy = landmarks2[i].y - point.y;
+      return sum + Math.sqrt(dx * dx + dy * dy);
+    }, 0) / landmarks1.length;
   }
 }
